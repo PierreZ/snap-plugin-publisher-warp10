@@ -5,10 +5,10 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 
+	"github.com/intelsdi-x/snap-plugin-utilities/logger"
 	"github.com/intelsdi-x/snap/control/plugin"
 	"github.com/intelsdi-x/snap/control/plugin/cpolicy"
 	"github.com/intelsdi-x/snap/core"
@@ -36,7 +36,22 @@ type GTS struct {
 // Print respects the following format:
 // TS/LAT:LON/ELEV NAME{LABELS} VALUE
 func (gts GTS) Print() []byte {
-	return []byte(gts.TS + "/" + gts.Lat + ":" + gts.Long + "/" + gts.Elev + " " + gts.Name + "{" + gts.Labels + "}" + " " + gts.Value)
+	var s string
+	s = fmt.Sprintf(s, "%s/%s:%s %s{%s} %s\n", gts.TS, gts.Lat, gts.Long, gts.Elev, gts.Name, gts.getLabels(), gts.Value)
+	return []byte(s)
+}
+
+// getLabels format the map into the right form
+func (gts GTS) getLabels() string {
+
+	var s string
+	for key, value := range gts.Labels {
+
+		s = s + key + "=" + value + ","
+	}
+	// Removing last comma
+	s = strings.TrimSuffix(s, ",")
+	return s
 }
 
 // Meta returns a plugin meta data
@@ -44,8 +59,8 @@ func Meta() *plugin.PluginMeta {
 	return plugin.NewPluginMeta(name, version, pluginType, []string{plugin.SnapGOBContentType}, []string{plugin.SnapGOBContentType})
 }
 
-//NewWarp10Publisher returns an instance of the OpenTSDB publisher
-func NewWarp10Publisher() *opentsdbPublisher {
+//NewWarp10Publisher returns an instance of the warp10 publisher
+func NewWarp10Publisher() *warp10Publisher {
 	return &warp10Publisher{}
 }
 
@@ -72,29 +87,28 @@ func (p *warp10Publisher) GetConfigPolicy() (*cpolicy.ConfigPolicy, error) {
 
 // Publish publishes metric data to opentsdb.
 func (p *warp10Publisher) Publish(contentType string, content []byte, config map[string]ctypes.ConfigValue) error {
-	logger := log.New()
 	var metrics []plugin.MetricType
 
 	switch contentType {
 	case plugin.SnapGOBContentType:
 		dec := gob.NewDecoder(bytes.NewBuffer(content))
 		if err := dec.Decode(&metrics); err != nil {
-			logger.Printf("Error decoding GOB: error=%v content=%v", err, content)
+			logger.LogError("Error decoding GOB: error=", err, "content=", content)
 			return err
 		}
 	case plugin.SnapJSONContentType:
 		err := json.Unmarshal(content, &metrics)
 		if err != nil {
-			logger.Printf("Error decoding JSON: error=%v content=%v", err, content)
+			logger.LogError("Error decoding JSON: error=", err, "content=", content)
 			return err
 		}
 	default:
-		logger.Printf("Error unknown content type '%v'", contentType)
+		logger.LogError("Error unknown content type ", contentType)
 		return fmt.Errorf("Unknown content type '%s'", contentType)
 	}
 
 	var temp GTS
-	var points []GTS
+	var pts []GTS
 
 	// Parsing
 	for _, m := range metrics {
@@ -104,27 +118,27 @@ func (p *warp10Publisher) Publish(contentType string, content []byte, config map
 		for k, v := range tags {
 			tempTags[k] = string(v)
 		}
-		tempTags[host] = string(tags[core.STD_TAG_PLUGIN_RUNNING_ON])
+		tempTags["host"] = string(tags[core.STD_TAG_PLUGIN_RUNNING_ON])
 
 		temp = GTS{
-			m.Timestamp().Unix(),
+			string(m.Timestamp().Unix()),
 			"", // Lat
 			"", // Long
 			"", // Elev
 			strings.Join(m.Namespace().Strings(), "."),
 			tempTags,
-			string(m.Data()),
+			string(m.Data().(string)),
 		}
 		pts = append(pts, temp)
 	}
 
 	// Create buffer of GTS
 	var b bytes.Buffer
-	for pt := range pts {
-		b.Write(pt.Print() + "\n")
+	for _, pt := range pts {
+		b.Write(pt.Print())
 	}
 
-	req, err := http.NewRequest("POST", config["host"].(ctypes.ConfigValueStr).Value+"/api/v0/update", b)
+	req, err := http.NewRequest("POST", config["host"].(ctypes.ConfigValueStr).Value+"/api/v0/update", &b)
 	req.Header.Set("X-Warp10-Token", config["token"].(ctypes.ConfigValueStr).Value)
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -137,4 +151,10 @@ func (p *warp10Publisher) Publish(contentType string, content []byte, config map
 	defer resp.Body.Close()
 
 	return nil
+}
+
+func handleErr(e error) {
+	if e != nil {
+		panic(e)
+	}
 }
