@@ -120,12 +120,34 @@ func (p *warp10Publisher) Publish(contentType string, content []byte, config map
 		}
 		tempTags["host"] = string(tags[core.STD_TAG_PLUGIN_RUNNING_ON])
 
+		// Copy of influxdb publisher code
+		newtags := map[string]string{}
+		ns := m.Namespace().Strings()
+
+		isDynamic, indexes := m.Namespace().IsDynamic()
+		if isDynamic {
+			for i, j := range indexes {
+				// The second return value from IsDynamic(), in this case `indexes`, is the index of
+				// the dynamic element in the unmodified namespace. However, here we're deleting
+				// elements, which is problematic when the number of dynamic elements in a namespace is
+				// greater than 1. Therefore, we subtract i (the loop iteration) from j
+				// (the original index) to compensate.
+				//
+				// Remove "data" from the namespace and create a tag for it
+				ns = append(ns[:j-i], ns[j-i+1:]...)
+				newtags[m.Namespace()[j].Name] = m.Namespace()[j].Value
+			}
+		}
+		for k, v := range newtags {
+			tempTags[k] = v
+		}
+
 		temp = GTS{
 			string(m.Timestamp().Unix()),
 			"", // Lat
 			"", // Long
 			"", // Elev
-			strings.Join(m.Namespace().Strings(), "."),
+			strings.Join(ns, "."),
 			tempTags,
 			string(m.Data().(string)),
 		}
